@@ -1,0 +1,7 @@
+table_add MyIngress.ipv4_lpm ipv4_forward 10.0.2.0/24 => 0x000000000C02 1
+
+table_add MyIngress.sff_exact sff_proxy_decap 259 => 0x00000000F300 3
+table_add MyIngress.sf_return sff_proxy_encap 3 10.0.1.1 10.0.3.1 => 258 100 0x000000000701 2
+
+table_add MyIngress.sff_exact sff_proxy_decap 514 => 0x00000000F300 3
+table_add MyIngress.sf_return sff_proxy_encap 3 10.0.2.1 10.0.4.1 => 513 200 0x000000000701 2
