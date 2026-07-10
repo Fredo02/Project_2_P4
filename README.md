@@ -2,11 +2,13 @@
 
 ## 1. Architecture Introduction
 
-The network architecture implements a Service Function Chaining (SFC) overlay using P4 switches, segregating traffic into predefined service chains based on specific policies. The network logic is distributed across three distinct node roles:
+The network architecture implements a Service Function Chaining (SFC) overlay using P4 switches, segregating traffic into predefined service chains based on specific policies. The network logic is distributed across distinct node roles:
 
+* **Access Router (`SWA`)**: Acts as a standard IPv4 edge router connecting the client end-hosts (H1, H2) to the network. It is entirely unaware of the SFC overlay, utilizing standard longest-prefix match (LPM) routing to forward raw traffic to the Classifier and route return traffic back to the hosts.
 * **Classifier (`SWB`)**: Acts as the ingress gateway to the SFC domain. It intercepts standard IPv4 traffic, identifies specific flows (e.g., H1 to H3, H2 to H4), and encapsulates the packets with an NSH (Network Service Header) for service routing and an MPLS label for overlay transport.
-* **Transit Node (`SWC`)**: Operates as a purely transport-oriented switch within the MPLS domain. It forwards encapsulated packets using only the outer MPLS label, requiring no awareness of the inner NSH or IP payload.
+* **Transit Nodes (`SWC`, `SWF`, `SWG`)**: Act as overlay transport switches. While the packets are transported using MPLS, these nodes utilize the inner NSH header (specifically the spi_si field) to match and forward traffic along the correct service path without decapsulating the payload.
 * **Service Function Forwarders & Proxies (`SWD`, `SWE`)**: These nodes manage the delivery of packets to the actual Service Functions (SFs). Because the SFs are SFC-unaware (they only understand standard IP traffic), the SFF acts as a proxy: it strips the MPLS and NSH headers before delivering the packet to the SF, and re-encapsulates the packet with an updated Service Index (SI) when the SF returns it.
+* **Egress Router (`SWH`)**: Acts as the exit point of the SFC domain for forward traffic and the ingress point for return traffic. It ingeniously reuses the SFF proxy decapsulation logic to strip the overlay headers (MPLS and NSH) from packets completing their service chain, delivering standard IP traffic to the destination hosts (H3, H4). It also routes unencapsulated return traffic using standard IPv4 LPM.
 
 **Header Size Assumptions:**
 To correctly calculate the Maximum Segment Size (MSS) and parse packets, the following header sizes were assumed:
