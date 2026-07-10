@@ -12,9 +12,9 @@ The network architecture implements a Service Function Chaining (SFC) overlay us
 To correctly calculate the Maximum Segment Size (MSS) and parse packets, the following header sizes were assumed:
 
 * **MPLS Header**: 4 bytes
-* **NSH Header**: 24 bytes (8-byte Base/Service Path Header + 16-byte Context Headers)
+* **NSH Header**: 8 bytes (Strictly aligned to RFC 8300 NSH base header, 2 words)
 * **Inner Ethernet Header**: 14 bytes (used to maintain L2 compatibility for SFs)
-* **Total Overhead**: 42 bytes.
+* **Total Overhead**: 26 bytes.
 
 ---
 
@@ -36,25 +36,29 @@ header mpls_t {
     bit<8>  ttl;
 }
 
+// Strictly aligned to RFC 8300 NSH base header
 header nsh_t {
-    bit<16> base_header;
-    bit<8>  next_protocol;
-    bit<8>  spi_si; // Combined for exact matching, or separated as spi(24) and si(8)
-    bit<32> context1;
-    bit<32> context2;
-    bit<32> context3;
-    bit<32> context4;
+    bit<2>  ver;
+    bit<1>  o;
+    bit<1>  c_u;
+    bit<6>  ttl;
+    bit<6>  length;
+    bit<4>  u_flags;
+    bit<4>  md_type;
+    bit<8>  next_proto;
+    bit<32> spi_si;
 }
 
 struct headers {
     ethernet_t ethernet;
+    ipv4_t     ipv4;
+    tcp_t      tcp;
     mpls_t     mpls;
     nsh_t      nsh;
     ethernet_t inner_ethernet;
-    ipv4_t     ipv4;
-    tcp_t      tcp;
+    ipv4_t     inner_ipv4;
+    tcp_t      inner_tcp;
 }
-
 ```
 
 ### Parser Implementation
@@ -62,7 +66,7 @@ struct headers {
 The parser is designed to transition state based on the `etherType` or `next_protocol` fields, peeling back the encapsulation layers sequentially.
 
 ```p4
-parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
+parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout standard_metadata_t sm) {
     state start {
         packet.extract(hdr.ethernet);
         transition select(hdr.ethernet.etherType) {
@@ -71,35 +75,38 @@ parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout st
             default: accept;
         }
     }
-
-    state parse_mpls {
-        packet.extract(hdr.mpls);
-        // Assuming NSH directly follows MPLS in this architecture
-        transition parse_nsh; 
-    }
-
-    state parse_nsh {
-        packet.extract(hdr.nsh);
-        transition select(hdr.nsh.next_protocol) {
-            0x03: parse_inner_ethernet; // 0x03 indicates Ethernet payload in NSH
-            default: accept;
-        }
-    }
-
-    state parse_inner_ethernet {
-        packet.extract(hdr.inner_ethernet);
-        transition select(hdr.inner_ethernet.etherType) {
-            TYPE_IPV4: parse_ipv4;
-            default: accept;
-        }
-    }
-
+    
+    // Parse normal IPv4 traffic
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        transition accept;
+        transition select(hdr.ipv4.protocol) {
+            6: parse_tcp;
+            default: accept;
+        }
     }
-}
+    
+    // Parse SFC encapsulated traffic
+    state parse_mpls {
+        packet.extract(hdr.mpls);
+        packet.extract(hdr.nsh);
+        packet.extract(hdr.inner_ethernet);
+        transition select(hdr.inner_ethernet.etherType) {
+            TYPE_IPV4: parse_inner_ipv4;
+            default: accept;
+        }
+    }
 
+    state parse_inner_ipv4 {
+        packet.extract(hdr.inner_ipv4);
+        transition select(hdr.inner_ipv4.protocol) {
+            6: parse_inner_tcp;
+            default: accept;
+        }
+    }
+    
+    state parse_tcp { packet.extract(hdr.tcp); transition accept; }
+    state parse_inner_tcp { packet.extract(hdr.inner_tcp); transition accept; }
+}
 ```
 
 ---
@@ -113,46 +120,56 @@ When a match is found, the `encap_sfc` action is triggered. This action shifts t
 ### Classifier Match-Action Table
 
 ```p4
-action encap_sfc(bit<24> spi, bit<8> si, bit<20> mpls_label, bit<9> port, bit<48> dstMac) {
-    // 1. Mark packet as encapsulated
+action encap_sfc(bit<24> spi, bit<8> si, bit<20> mpls_label, egressSpec_t port, macAddr_t dstMac) {
     meta.is_sfc = 1;
     
-    // 2. Make original Ethernet inner
-    hdr.inner_ethernet.setValid();
+    // 1. Preserve original packet inside inner headers
     hdr.inner_ethernet = hdr.ethernet;
+    hdr.inner_ipv4 = hdr.ipv4;
+    hdr.inner_tcp = hdr.tcp;
 
-    // 3. Add NSH
-    hdr.nsh.setValid();
-    hdr.nsh.spi_si = (spi << 8) | si;
-    hdr.nsh.next_protocol = 0x03; // Inner Ethernet
+    // 2. Build Outer Ethernet for overlay transport
+    hdr.ethernet.dstAddr = dstMac;
+    hdr.ethernet.srcAddr = 0x0000000000B2; // Local switch MAC
+    hdr.ethernet.etherType = TYPE_MPLS;
 
-    // 4. Add MPLS
+    // 3. Build MPLS Header
     hdr.mpls.setValid();
     hdr.mpls.label = mpls_label;
+    hdr.mpls.tc = 0;
     hdr.mpls.bos = 1;
     hdr.mpls.ttl = 64;
 
-    // 5. Update Outer Ethernet
-    hdr.ethernet.etherType = TYPE_MPLS;
-    hdr.ethernet.dstAddr = dstMac;
+    // 4. Build NSH Header
+    hdr.nsh.setValid();
+    hdr.nsh.ver = 0;
+    hdr.nsh.o = 0;
+    hdr.nsh.c_u = 0;
+    hdr.nsh.ttl = 63;
+    hdr.nsh.length = 2;       // 8 bytes -> 2 words
+    hdr.nsh.u_flags = 0;
+    hdr.nsh.md_type = 1;      // No metadata attached
+    hdr.nsh.next_proto = 3;   // Next is Ethernet (RFC 8300)
+    hdr.nsh.spi_si = ((bit<32>)spi << 8) | (bit<32>)si;
+
+    // 5. Invalidate outer IP/TCP so they aren't emitted twice
+    hdr.ipv4.setInvalid();
+    hdr.tcp.setInvalid();
     
-    // 6. Forward
-    standard_metadata.egress_spec = port;
+    sm.egress_spec = port;
 }
 
 table classify {
-    key = {
-        hdr.ipv4.srcAddr: exact;
-        hdr.ipv4.dstAddr: exact;
-        hdr.ipv4.protocol: exact;
-        hdr.tcp.dstPort: exact; // E.g., 5201 for iperf3
+    key = { 
+        hdr.ipv4.srcAddr: exact; 
+        hdr.ipv4.dstAddr: exact; 
+        hdr.ipv4.protocol: exact; 
+        hdr.tcp.dstPort: exact; 
     }
-    actions = {
-        encap_sfc;
-        NoAction;
-    }
+    actions = { encap_sfc; NoAction; }
+    size = 64;
+    default_action = NoAction();
 }
-
 ```
 
 ---
@@ -167,41 +184,50 @@ The Service Function Forwarder (SFF) handles the complexity of making legacy SFs
 ### Proxy Logic Pseudo-code / Action Snippet
 
 ```p4
-action sff_proxy_decap(bit<9> sf_port) {
-    // Remove outer headers
+action sff_proxy_decap(macAddr_t sfMac, egressSpec_t sfPort) {
+    // Promote inner headers to outer headers
+    hdr.ethernet = hdr.inner_ethernet;
+    hdr.ipv4 = hdr.inner_ipv4;
+    hdr.tcp = hdr.inner_tcp;
+    
+    // Send to SF
+    hdr.ethernet.dstAddr = sfMac;
+    sm.egress_spec = sfPort;
+    
+    // Remove encapsulation
     hdr.mpls.setInvalid();
     hdr.nsh.setInvalid();
-    
-    // Promote inner ethernet to outer
-    hdr.ethernet = hdr.inner_ethernet;
     hdr.inner_ethernet.setInvalid();
+    hdr.inner_ipv4.setInvalid();
+    hdr.inner_tcp.setInvalid();
+}
+
+action sff_proxy_encap(bit<32> new_spi_si, bit<20> mpls_label, macAddr_t dstMac, egressSpec_t port) {
+    meta.is_sfc = 1;
     
-    // Send to standard SF
-    standard_metadata.egress_spec = sf_port;
-}
+    // Push original to inner
+    hdr.inner_ethernet = hdr.ethernet;
+    hdr.inner_ipv4 = hdr.ipv4;
+    hdr.inner_tcp = hdr.tcp;
 
-action sff_proxy_encap(bit<24> next_spi, bit<8> next_si, bit<20> next_mpls, bit<48> next_mac, bit<9> next_port) {
-    // Packet returning from SF looks like plain IPv4
-    hdr.inner_ethernet.setValid();
-    hdr.inner_ethernet = hdr.ethernet; // Save as inner
-
-    // Re-apply NSH with updated SI
-    hdr.nsh.setValid();
-    hdr.nsh.spi_si = (next_spi << 8) | next_si;
-    hdr.nsh.next_protocol = 0x03;
-
-    // Re-apply MPLS
-    hdr.mpls.setValid();
-    hdr.mpls.label = next_mpls;
-    hdr.mpls.bos = 1;
-    hdr.mpls.ttl = 64;
-
-    // Route back to overlay
+    // Build new outer headers
     hdr.ethernet.etherType = TYPE_MPLS;
-    hdr.ethernet.dstAddr = next_mac;
-    standard_metadata.egress_spec = next_port;
-}
+    hdr.ethernet.dstAddr = dstMac;
 
+    hdr.mpls.setValid();
+    hdr.mpls.label = mpls_label;
+    hdr.mpls.tc = 0; hdr.mpls.bos = 1; hdr.mpls.ttl = 64;
+
+    hdr.nsh.setValid();
+    hdr.nsh.ver = 0; hdr.nsh.o = 0; hdr.nsh.c_u = 0;
+    hdr.nsh.ttl = 63; hdr.nsh.length = 2; hdr.nsh.u_flags = 0;
+    hdr.nsh.md_type = 1; hdr.nsh.next_proto = 3;
+    hdr.nsh.spi_si = new_spi_si;
+
+    hdr.ipv4.setInvalid();
+    hdr.tcp.setInvalid();
+    sm.egress_spec = port;
+}
 ```
 
 ---
@@ -210,7 +236,7 @@ action sff_proxy_encap(bit<24> next_spi, bit<8> next_si, bit<20> next_mpls, bit<
 
 To validate the service chains, bandwidth testing was conducted using `iperf3`.
 
-Due to the addition of MPLS (4 bytes), NSH (24 bytes), and Inner Ethernet (14 bytes) headers, the standard MTU of 1500 bytes on the end hosts would cause fragmentation or packet loss within the overlay. To prevent this, the MSS (Maximum Segment Size) was explicitly lowered to **1434 bytes** in the `iperf3` client commands.
+Due to the addition of MPLS (4 bytes), NSH (8 bytes), and Inner Ethernet (14 bytes) headers, the standard MTU of 1500 bytes on the end hosts would cause fragmentation or packet loss within the overlay. To prevent this, the MSS (Maximum Segment Size) was explicitly lowered to **1434 bytes** in the `iperf3` client commands. This is derived from: 1500 - 4 (MPLS) - 8 (NSH) - 14 (Inner Eth) = 1474 bytes for the maximum inner IPv4 packet. Subtracting 20 bytes for IPv4 and 20 bytes for TCP yields exactly 1434 bytes.
 
 ### Chain 1: H1 -> H3 (Passes through SF1, SF3, SF2)
 
@@ -250,23 +276,7 @@ Connecting to host 10.0.4.1, port 5201
 
 ---
 
-## 6. Packet Captures (PCAP) Proof
-
-### 1. Overlay Link Capture (Demonstrating Encapsulation)
-
-The following capture was taken on an overlay link (e.g., between `SWB` and `SWC`). It clearly shows the stacked header architecture: the outer Ethernet frame encapsulates the `MPLS unicast` label, followed by the `NSH` payload, wrapping the inner standard IPv4 packet.
-
-> **[INSERT SCREENSHOT HERE: Wireshark or tcpdump output showing the outer MPLS and NSH headers on the overlay link]**
-
-### 2. SFF to SF Link Capture (Demonstrating Proxy Decapsulation)
-
-The following capture was taken on the physical link connecting the SFF (`SWE`) to the Service Function (`SF3`). As expected, the MPLS and NSH headers have been entirely stripped by the proxy logic. The Service Function receives a clean, native `Ethernet/IPv4/TCP` packet, proving that the SFC overlay is completely transparent to the legacy service node.
-
-> **[INSERT SCREENSHOT HERE: Wireshark or tcpdump output showing ONLY standard Eth/IPv4/TCP on the link towards the SF]**
-
----
-
-## 7. Return Traffic Analysis
+## 6. Return Traffic Analysis
 
 According to the project specifications, traffic returning from the destination host back to the source host does not need to traverse the Service Function Chains.
 
