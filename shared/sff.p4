@@ -144,8 +144,13 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
     }
 
     table ipv4_lpm {
-        key = { hdr.ipv4.dstAddr : lpm; }
-        actions = { ipv4_forward; drop; }
+        key = {
+            hdr.ipv4.dstAddr : lpm;
+        }
+        actions = {
+            ipv4_forward;
+            drop;
+        }
         size = 1024;
         default_action = drop();
     }
@@ -178,8 +183,14 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
     }
 
     table sff_exact {
-        key = { hdr.nsh.spi_si : exact; }
-        actions = { sff_forward; sff_proxy_decap; drop; }
+        key = {
+            hdr.nsh.spi_si : exact;
+        }
+        actions = {
+            sff_forward;
+            sff_proxy_decap;
+            drop;
+        }
         size = 1024;
         default_action = drop();
     }
@@ -199,12 +210,19 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
 
         hdr.mpls.setValid();
         hdr.mpls.label = mpls_label;
-        hdr.mpls.tc = 0; hdr.mpls.bos = 1; hdr.mpls.ttl = 64;
+        hdr.mpls.tc = 0;
+        hdr.mpls.bos = 1;
+        hdr.mpls.ttl = 64;
 
         hdr.nsh.setValid();
-        hdr.nsh.ver = 0; hdr.nsh.o = 0; hdr.nsh.c_u = 0;
-        hdr.nsh.ttl = 63; hdr.nsh.length = 2; hdr.nsh.u_flags = 0;
-        hdr.nsh.md_type = 1; hdr.nsh.next_proto = 3;
+        hdr.nsh.ver = 0;
+        hdr.nsh.o = 0;
+        hdr.nsh.c_u = 0;
+        hdr.nsh.ttl = 63;
+        hdr.nsh.length = 2;
+        hdr.nsh.u_flags = 0;
+        hdr.nsh.md_type = 1;
+        hdr.nsh.next_proto = 3;
         hdr.nsh.spi_si = new_spi_si;
 
         hdr.ipv4.setInvalid();
@@ -218,7 +236,10 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
             hdr.ipv4.srcAddr: exact;
             hdr.ipv4.dstAddr: exact;
         }
-        actions = { sff_proxy_encap; NoAction; }
+        actions = {
+            sff_proxy_encap;
+            NoAction;
+        }
         size = 1024;
         default_action = NoAction();
     }

@@ -105,7 +105,9 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) { apply { } }
 /* ============================ INGRESS ============================ */
 control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadata_t sm) {
     
-    action drop() { mark_to_drop(sm); }
+    action drop() {
+        mark_to_drop(sm);
+    }
 
     action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
         sm.egress_spec = port;
@@ -115,8 +117,13 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
     }
 
     table ipv4_lpm {
-        key = { hdr.ipv4.dstAddr : lpm; }
-        actions = { ipv4_forward; drop; }
+        key = {
+            hdr.ipv4.dstAddr : lpm;
+        }
+        actions = {
+            ipv4_forward;
+            drop;
+        }
         size = 1024;
         default_action = drop();
     }
@@ -168,7 +175,10 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
             hdr.ipv4.protocol: exact; 
             hdr.tcp.dstPort: exact; 
         }
-        actions = { encap_sfc; NoAction; }
+        actions = {
+            encap_sfc;
+            NoAction;
+        }
         size = 64;
         default_action = NoAction();
     }
