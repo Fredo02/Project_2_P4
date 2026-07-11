@@ -9,7 +9,6 @@ const bit<16> TYPE_IPV4 = 0x0800;
 const bit<16> TYPE_MPLS = 0x8847;
 
 /* ============================ HEADERS ============================ */
-// Devono essere identici al classifier.p4
 header ethernet_t {
     macAddr_t dstAddr;
     macAddr_t srcAddr;
@@ -17,25 +16,49 @@ header ethernet_t {
 }
 
 header ipv4_t {
-    bit<4>  version; bit<4>  ihl; bit<8>  diffserv; bit<16> totalLen;
-    bit<16> identification; bit<3>  flags; bit<13> fragOffset;
-    bit<8>  ttl; bit<8>  protocol; bit<16> hdrChecksum;
-    ip4Addr_t srcAddr; ip4Addr_t dstAddr;
+    bit<4>  version;
+    bit<4>  ihl;
+    bit<8>  diffserv;
+    bit<16> totalLen;
+    bit<16> identification;
+    bit<3>  flags;
+    bit<13> fragOffset;
+    bit<8>  ttl;
+    bit<8>  protocol;
+    bit<16> hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
 }
 
 header tcp_t {
-    bit<16> srcPort; bit<16> dstPort; bit<32> seqNo; bit<32> ackNo;
-    bit<4>  dataOffset; bit<4>  res; bit<8>  flags; bit<16> window;
-    bit<16> checksum; bit<16> urgentPtr;
+    bit<16> srcPort;
+    bit<16> dstPort;
+    bit<32> seqNo;
+    bit<32> ackNo;
+    bit<4>  dataOffset;
+    bit<4>  res;
+    bit<8>  flags;
+    bit<16> window;
+    bit<16> checksum;
+    bit<16> urgentPtr;
 }
 
 header mpls_t {
-    bit<20> label; bit<3>  tc; bit<1>  bos; bit<8>  ttl;
+    bit<20> label;
+    bit<3>  tc;
+    bit<1>  bos;
+    bit<8>  ttl;
 }
 
 header nsh_t {
-    bit<2>  ver; bit<1>  o; bit<1>  c_u; bit<6>  ttl; bit<6>  length;
-    bit<4>  u_flags; bit<4>  md_type; bit<8>  next_proto;
+    bit<2>  ver;
+    bit<1>  o;
+    bit<1>  c_u;
+    bit<6>  ttl;
+    bit<6>  length;
+    bit<4>  u_flags;
+    bit<4>  md_type;
+    bit<8>  next_proto;
     bit<32> spi_si;
 }
 
@@ -93,15 +116,24 @@ parser MyParser(packet_in packet, out headers hdr, inout metadata meta, inout st
         }
     }
     
-    state parse_tcp { packet.extract(hdr.tcp); transition accept; }
-    state parse_inner_tcp { packet.extract(hdr.inner_tcp); transition accept; }
+    state parse_tcp {
+        packet.extract(hdr.tcp);
+        transition accept;
+    }
+
+    state parse_inner_tcp {
+        packet.extract(hdr.inner_tcp);
+        transition accept;
+    }
 }
 
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) { apply { } }
 
 /* ============================ INGRESS ============================ */
 control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadata_t sm) {
-    action drop() { mark_to_drop(sm); }
+    action drop() {
+        mark_to_drop(sm);
+    }
 
     // 1. NORMAL IPv4 ROUTING
     action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
@@ -228,7 +260,8 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
               hdr.ipv4.protocol,
               hdr.ipv4.srcAddr,
               hdr.ipv4.dstAddr },
-            hdr.ipv4.hdrChecksum, HashAlgorithm.csum16
+            hdr.ipv4.hdrChecksum,
+            HashAlgorithm.csum16
         );
     }
 }
